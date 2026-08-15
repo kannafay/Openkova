@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { createRenderer, closeBrowser } from '../renderer.js';
 import { LocalStorageAdapter } from '../storage.js';
 
@@ -14,13 +15,22 @@ let storage: LocalStorageAdapter;
 let renderer: ReturnType<typeof createRenderer>;
 let urlServer: http.Server;
 let urlServerBase: string;
+let delayedAssetServed = false;
 
 before(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openkova-renderer-'));
   storage = new LocalStorageAdapter(tmpDir);
   renderer = createRenderer(storage);
 
-  urlServer = http.createServer((_req, res) => {
+  urlServer = http.createServer((req, res) => {
+    if (req.url === '/delayed.svg') {
+      setTimeout(() => {
+        delayedAssetServed = true;
+        res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
+        res.end('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#22c55e"/></svg>');
+      }, 250);
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(`<html><body style="background:#ff6b6b;">
       <h1 style="color:#fff;font-family:sans-serif;">Renderer Test</h1></body></html>`);
@@ -47,6 +57,10 @@ function assertPng(data: Buffer, label: string) {
   }
 }
 
+function readPngDimensions(data: Buffer): { width: number; height: number } {
+  return { width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
+}
+
 // ── screenshotSnippet ────────────────────────────────────────────────────────
 
 describe('screenshotSnippet', () => {
@@ -64,6 +78,16 @@ describe('screenshotSnippet', () => {
     const data = await storage.get('s-session-2', imageId);
     assert.ok(data !== null, 'image must be persisted');
     assertPng(data, 'screenshotSnippet');
+  });
+
+  test('renders raster output at 1.5x pixel density', { timeout: 30_000 }, async () => {
+    const sessionId = randomUUID();
+    const imageId = await renderer.screenshotSnippet('<p>Sharp text</p>', sessionId, {
+      viewport: { width: 720, height: 800 },
+    });
+    const data = await storage.get(sessionId, imageId);
+    assert.ok(data !== null);
+    assert.deepEqual(readPngDimensions(data), { width: 1080, height: 1200 });
   });
 
   test('styled HTML produces a non-trivially-small file', { timeout: 30_000 }, async () => {
@@ -103,6 +127,20 @@ describe('screenshotSnippet', () => {
     const data = await storage.get('s-empty', imageId);
     assert.ok(data !== null);
     assertPng(data, 'empty-body');
+  });
+
+  test('waits for static assets added shortly after load', { timeout: 30_000 }, async () => {
+    delayedAssetServed = false;
+    const html = `<script>
+      setTimeout(() => {
+        const image = document.createElement('img');
+        image.src = '${urlServerBase}/delayed.svg';
+        document.body.appendChild(image);
+      }, 100);
+    </script>`;
+
+    await renderer.screenshotSnippet(html, randomUUID());
+    assert.equal(delayedAssetServed, true, 'capture must wait for the delayed image response');
   });
 });
 

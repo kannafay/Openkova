@@ -11,3 +11,5 @@ data/
 packages/core/dist/
 apps/web/.next/
 kova-screenshots/
+# Private, locally licensed fonts used only for internal Docker builds.
+internal-fonts/

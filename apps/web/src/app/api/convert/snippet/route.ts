@@ -1,10 +1,16 @@
 import { type NextRequest } from 'next/server';
 import { screenshotSnippet } from '@openkova/core';
-import { sseResponse } from '@/lib/sse';
+import { conversionResponse, resolveResponseMode } from '@/lib/sse';
 import { parseFormat, parseViewport, resolveSessionId } from '@/lib/parse';
 import { MAX_HTML_BYTES } from '@/lib/config';
+import { requireApiKey } from '@/lib/api-auth';
+import { storage } from '@/lib/storage';
+import { createOutputFilename, publicImageUrl } from '@/lib/output-filename';
 
 export async function POST(req: NextRequest) {
+  const authError = requireApiKey(req);
+  if (authError) return authError;
+
   let body: unknown;
   try {
     body = await req.json();
@@ -12,12 +18,14 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { html, sessionId: providedSessionId, viewport: rawViewport, fullPage, format: rawFormat } = body as {
+  const { html, sessionId: providedSessionId, viewport: rawViewport, fullPage, format: rawFormat, responseMode: rawResponseMode, filename: rawFilename } = body as {
     html?: unknown;
     sessionId?: unknown;
     viewport?: unknown;
     fullPage?: unknown;
     format?: unknown;
+    responseMode?: unknown;
+    filename?: unknown;
   };
 
   if (typeof html !== 'string' || html.trim().length === 0) {
@@ -31,20 +39,28 @@ export async function POST(req: NextRequest) {
   const sessionId = resolveSessionId(providedSessionId);
   const viewport = parseViewport(rawViewport);
   const format = parseFormat(rawFormat);
+  const responseMode = resolveResponseMode(req, rawResponseMode);
 
-  return sseResponse(async (send) => {
+  return conversionResponse(responseMode, async (send) => {
     try {
       send({ type: 'progress', message: 'Launching virtual browser' });
-      const imageId = await screenshotSnippet(html, sessionId, {
+      const storageId = await screenshotSnippet(html, sessionId, {
         viewport,
         fullPage: fullPage === true,
         format,
         onProgress: (msg) => send({ type: 'progress', message: msg }),
       });
+      const filename = createOutputFilename(rawFilename, 'snippet', storageId);
+      await storage.setFilename(sessionId, storageId, filename);
       send({
         type: 'done',
         message: 'Done — screenshot saved',
-        data: { sessionId, imageId, url: `/api/image/${sessionId}/${imageId}` },
+        data: {
+          sessionId,
+          imageId: filename,
+          filename,
+          url: publicImageUrl(sessionId, filename),
+        },
       });
     } catch (err) {
       console.error('[convert/snippet]', err);

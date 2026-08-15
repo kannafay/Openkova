@@ -3,7 +3,10 @@ import { LocalStorageAdapter, type StorageAdapter } from './storage.js';
 import { isSafeHost } from './crawler.js';
 
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
+const DEVICE_SCALE_FACTOR = 1.5;
 const TIMEOUT = 30_000;
+const RESOURCE_IDLE_TIME = 500;
+const RESOURCE_WAIT_TIMEOUT = 15_000;
 
 const ARGS = [
   '--no-sandbox',
@@ -145,6 +148,76 @@ function wrapHtml(html: string, viewport: Viewport): string {
 </html>`;
 }
 
+async function waitForStaticResources(page: Page, fullPage: boolean): Promise<void> {
+  await page.evaluate(
+    async ({ shouldScroll, timeout }) => {
+      const browserGlobal = globalThis as typeof globalThis & {
+        document: any;
+        innerHeight: number;
+        scrollTo: (x: number, y: number) => void;
+      };
+      const doc = browserGlobal.document;
+      const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+      // Native lazy-loaded images otherwise remain unloaded outside the viewport.
+      for (const image of Array.from(doc.images ?? []) as any[]) {
+        image.loading = 'eager';
+      }
+
+      // Trigger IntersectionObserver-based lazy loaders before a full-page capture.
+      if (shouldScroll) {
+        const startedAt = Date.now();
+        const step = Math.max(browserGlobal.innerHeight || 0, 600);
+        let y = 0;
+        while (Date.now() - startedAt < timeout / 2) {
+          const height = Math.max(
+            doc.body?.scrollHeight ?? 0,
+            doc.documentElement?.scrollHeight ?? 0,
+          );
+          if (y >= height) break;
+          y = Math.min(y + step, height);
+          browserGlobal.scrollTo(0, y);
+          await sleep(50);
+        }
+        browserGlobal.scrollTo(0, 0);
+      }
+
+      const images = Array.from(doc.images ?? []) as any[];
+      const imagesReady = Promise.all(
+        images.map(async (image) => {
+          if (!image.complete) {
+            await new Promise<void>((resolve) => {
+              image.addEventListener('load', () => resolve(), { once: true });
+              image.addEventListener('error', () => resolve(), { once: true });
+            });
+          }
+          if (typeof image.decode === 'function') {
+            await image.decode().catch(() => undefined);
+          }
+        }),
+      );
+      const fontsReady = doc.fonts?.ready ?? Promise.resolve();
+
+      // Broken or permanently pending assets must not block a capture forever.
+      await Promise.race([
+        Promise.all([imagesReady, fontsReady]),
+        sleep(timeout),
+      ]);
+    },
+    { shouldScroll: fullPage, timeout: RESOURCE_WAIT_TIMEOUT },
+  );
+
+  // Covers stylesheets, background images and resources injected shortly after load.
+  try {
+    await page.waitForNetworkIdle({
+      idleTime: RESOURCE_IDLE_TIME,
+      timeout: RESOURCE_WAIT_TIMEOUT,
+    });
+  } catch {
+    // Pages with polling connections may never become completely idle.
+  }
+}
+
 async function capture(page: Page, options: ScreenshotOptions): Promise<Buffer> {
   const format = options.format ?? 'png';
   const fullPage = options.fullPage ?? false;
@@ -179,9 +252,11 @@ export function createRenderer(storage: StorageAdapter) {
     const browser = await getBrowser();
     const page = await browser.newPage();
     try {
-      await page.setViewport(viewport);
+      await page.setViewport({ ...viewport, deviceScaleFactor: DEVICE_SCALE_FACTOR });
       options?.onProgress?.('Rendering HTML');
       await page.setContent(wrapHtml(html, viewport), { waitUntil: 'load', timeout: TIMEOUT });
+      options?.onProgress?.('Waiting for static resources');
+      await waitForStaticResources(page, options?.fullPage ?? false);
       options?.onProgress?.('Taking snapshot');
       await storage.save(sessionId, imageId, await capture(page, options ?? {}));
     } finally {
@@ -214,9 +289,11 @@ export function createRenderer(storage: StorageAdapter) {
     const browser = await getBrowser();
     const page = await browser.newPage();
     try {
-      await page.setViewport(viewport);
+      await page.setViewport({ ...viewport, deviceScaleFactor: DEVICE_SCALE_FACTOR });
       options?.onProgress?.(`Loading ${url}`);
       await page.goto(url, { waitUntil: 'load', timeout: TIMEOUT });
+      options?.onProgress?.('Waiting for static resources');
+      await waitForStaticResources(page, options?.fullPage ?? false);
       options?.onProgress?.('Taking snapshot');
       await storage.save(sessionId, imageId, await capture(page, options ?? {}));
     } finally {

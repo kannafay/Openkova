@@ -118,26 +118,30 @@ Screenshots are saved to `./data` by default. Override with `OPENKOVA_STORAGE_PA
 ### Docker
 
 ```bash
+cp .env.example .env
+# Set API_KEY in .env, then:
 docker compose up --build
 ```
 
 This builds the multi-stage image (Node + system Chromium on Debian) and mounts a persistent volume at `/data` for screenshots.
 
+`CLEANUP_RETENTION_HOURS` is optional and defaults to `24`. Set it to `0` to disable automatic cleanup. Cleanup runs once when the server starts and then once per hour.
+
 ## API
 
-All convert endpoints stream [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) rather than a single JSON response. Progress messages arrive as `progress` events; the final result arrives as a `done` event.
+All convert endpoints require `Authorization: Bearer <API_KEY>` (or `X-API-Key`) and stream [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) by default. Progress messages arrive as `progress` events; the final result arrives as a `done` event. Add `?responseMode=json` (or send `responseMode=json` in the request) to wait for completion and receive one regular JSON response.
 
 ```
-POST /api/convert/snippet        { html, sessionId?, viewport?, fullPage?, format? }
-POST /api/convert/file           multipart/form-data  files[], sessionId?, viewport?, fullPage?, format?
-POST /api/convert/url            { url, depth?, sessionId?, viewport?, fullPage?, format? }  — crawl mode
-POST /api/convert/url            { urls[], sessionId, offset, total, viewport?, fullPage?, format? }  — paginate mode
+POST /api/convert/snippet        { html, filename?, sessionId?, viewport?, fullPage?, format?, responseMode? }
+POST /api/convert/file           multipart/form-data  files[], filename?, sessionId?, viewport?, fullPage?, format?, responseMode?
+POST /api/convert/url            { url, filename?, depth?, sessionId?, viewport?, fullPage?, format?, responseMode? }  — crawl mode
+POST /api/convert/url            { urls[], filename?, sessionId, offset, total, viewport?, fullPage?, format?, responseMode? }  — paginate mode
 GET  /api/image/:sid/:id         → file binary (PNG/JPEG/WebP/PDF)
 GET  /api/session/:sid/download  → ZIP of all session files
 GET  /api/session/:sid           → { images: string[] }
 ```
 
-`format` accepts `"png"` (default), `"jpeg"`, `"webp"`, or `"pdf"`. The returned `imageId` includes the file extension (e.g. `abc123.jpg`).
+`format` accepts `"png"` (default), `"jpeg"`, `"webp"`, or `"pdf"`. The optional `filename` controls the public image ID, image URL, download name, and ZIP filename. File uploads use the source HTML filename when `filename` is omitted. Extensions are added automatically; multi-result custom names append `-1`, `-2`, and so on. UUID storage IDs remain private implementation details.
 
 Full API documentation at [openkova.dev/screenshot-api](https://www.openkova.dev/screenshot-api).
 
@@ -146,7 +150,10 @@ Full API documentation at [openkova.dev/screenshot-api](https://www.openkova.dev
 ```js
 const res = await fetch('/api/convert/snippet', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer your-api-key',
+  },
   body: JSON.stringify({
     html: '<h1>Hello</h1>',
     viewport: { width: 1280, height: 800 },
@@ -189,12 +196,16 @@ railway.toml    Railway deployment config
 
 ## Storage retention
 
-Files are automatically deleted **24 hours** after the session directory was last written to. A cleanup pass runs every hour on server startup via `instrumentation.ts`. Download your files before then using the **Download All** button or the `/api/session/:sid/download` ZIP endpoint.
+Retention is calculated from each session directory's last-modified time. The server runs one cleanup pass immediately at startup, then repeats it every hour. Each pass deletes the entire session directory when its age is greater than `CLEANUP_RETENTION_HOURS`.
+
+With the default `24`-hour retention, deletion normally occurs between 24 and 25 hours after the session directory's last modification; it is not an exact 24-hour timer for each image. Restarting the server triggers an immediate check. Set the value to `0` to disable cleanup. Download files beforehand using the **Download All** button or `/api/session/:sid/download`.
 
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
+| `API_KEY` | required | Secret required by all `/api/convert/*` endpoints |
+| `CLEANUP_RETENTION_HOURS` | `24` | Session retention in hours; `0` disables cleanup; checked at startup and hourly |
 | `CHROMIUM_PATH` | auto-detected | Path to Chrome/Chromium binary |
 | `OPENKOVA_STORAGE_PATH` | `./data` | Directory for saved files |
 | `PORT` | `3000` | HTTP port |

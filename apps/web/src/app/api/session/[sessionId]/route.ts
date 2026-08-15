@@ -14,5 +14,9 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid session' }, { status: 400 });
   }
 
-  return NextResponse.json({ images });
+  const publicImageIds = await Promise.all(
+    images.map(async (imageId) => (await storage.getFilename(sessionId, imageId)) ?? imageId),
+  );
+
+  return NextResponse.json({ images: publicImageIds });
 }

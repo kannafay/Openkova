@@ -6,6 +6,9 @@ export interface StorageAdapter {
   get(sessionId: string, imageId: string): Promise<Buffer | null>;
   list(sessionId: string): Promise<string[]>;
   delete(sessionId: string, imageId: string): Promise<void>;
+  setFilename(sessionId: string, imageId: string, filename: string): Promise<void>;
+  getFilename(sessionId: string, imageId: string): Promise<string | null>;
+  findImageIdByFilename(sessionId: string, filename: string): Promise<string | null>;
 }
 
 // Prevents path traversal: imageId must be a UUID with a known extension,
@@ -25,6 +28,18 @@ function assertSafeSessionId(sessionId: string): void {
   }
 }
 
+function assertSafeOutputFilename(filename: string): void {
+  if (
+    !filename ||
+    filename.length > 255 ||
+    filename === '.' ||
+    filename === '..' ||
+    /[\\/\u0000-\u001f\u007f]/.test(filename)
+  ) {
+    throw new Error(`Invalid output filename: ${JSON.stringify(filename)}`);
+  }
+}
+
 export class LocalStorageAdapter implements StorageAdapter {
   private readonly basePath: string;
 
@@ -41,6 +56,12 @@ export class LocalStorageAdapter implements StorageAdapter {
   private sessionDir(sessionId: string): string {
     assertSafeSessionId(sessionId);
     return path.join(this.basePath, sessionId);
+  }
+
+  private filenameSidecar(sessionId: string, imageId: string): string {
+    assertSafeSessionId(sessionId);
+    assertSafeImageId(imageId);
+    return path.join(this.basePath, sessionId, `.${imageId}.filename`);
   }
 
   async save(sessionId: string, imageId: string, data: Buffer): Promise<void> {
@@ -71,6 +92,31 @@ export class LocalStorageAdapter implements StorageAdapter {
 
   async delete(sessionId: string, imageId: string): Promise<void> {
     await fs.unlink(this.filePath(sessionId, imageId));
+    await fs.rm(this.filenameSidecar(sessionId, imageId), { force: true });
+  }
+
+  async setFilename(sessionId: string, imageId: string, filename: string): Promise<void> {
+    assertSafeOutputFilename(filename);
+    await fs.writeFile(this.filenameSidecar(sessionId, imageId), filename, 'utf8');
+  }
+
+  async getFilename(sessionId: string, imageId: string): Promise<string | null> {
+    try {
+      const filename = await fs.readFile(this.filenameSidecar(sessionId, imageId), 'utf8');
+      return filename.trim() || null;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+  }
+
+  async findImageIdByFilename(sessionId: string, filename: string): Promise<string | null> {
+    assertSafeOutputFilename(filename);
+    const imageIds = await this.list(sessionId);
+    for (const imageId of imageIds) {
+      if ((await this.getFilename(sessionId, imageId)) === filename) return imageId;
+    }
+    return null;
   }
 
   async cleanup(maxAgeMs: number): Promise<number> {

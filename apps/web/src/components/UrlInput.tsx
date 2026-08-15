@@ -7,6 +7,7 @@ import { useSSEStream } from '@/hooks/useSSEStream';
 import { PAGE_SIZE } from '@/lib/config';
 
 interface Props {
+  apiKey: string;
   sessionId: string | null;
   viewport: Viewport;
   fullPage: boolean;
@@ -14,7 +15,7 @@ interface Props {
   onConversionComplete: (sessionId: string, images: GalleryImage[]) => void;
 }
 
-export default function UrlInput({ sessionId, viewport, fullPage, format, onConversionComplete }: Props) {
+export default function UrlInput({ apiKey, sessionId, viewport, fullPage, format, onConversionComplete }: Props) {
   const [url, setUrl] = useState('');
   const [depth, setDepth] = useState(1);
   const [remaining, setRemaining] = useState<string[]>([]);
@@ -41,7 +42,10 @@ export default function UrlInput({ sessionId, viewport, fullPage, format, onConv
     try {
       const res = await fetch('/api/convert/url', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey.trim()}`,
+        },
         body: JSON.stringify({ url: trimmed, sessionId, depth, viewport, fullPage, format }),
       });
       if (!res.ok) {
@@ -51,11 +55,11 @@ export default function UrlInput({ sessionId, viewport, fullPage, format, onConv
         return;
       }
       await runStream(res, (data) => {
-        const d = data as { sessionId: string; results: { imageId: string; url: string }[]; remaining: string[]; total: number };
+        const d = data as { sessionId: string; results: { imageId: string; filename: string; url: string }[]; remaining: string[]; total: number };
         setRemaining(d.remaining ?? []);
         setTotalDiscovered(d.total ?? 0);
         setCapturedCount(d.results.length);
-        onConversionComplete(d.sessionId, d.results.map((r) => ({ imageId: r.imageId, label: r.url })));
+        onConversionComplete(d.sessionId, d.results.map((r) => ({ imageId: r.imageId, filename: r.filename, label: r.url })));
       });
     } catch (err) {
       addLine({ message: err instanceof Error ? err.message : 'Conversion failed', status: 'error' });
@@ -73,7 +77,10 @@ export default function UrlInput({ sessionId, viewport, fullPage, format, onConv
     try {
       const res = await fetch('/api/convert/url', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey.trim()}`,
+        },
         body: JSON.stringify({ urls: batch, sessionId, offset: capturedCount, total: totalDiscovered, viewport, fullPage, format }),
       });
       if (!res.ok) {
@@ -83,10 +90,10 @@ export default function UrlInput({ sessionId, viewport, fullPage, format, onConv
         return;
       }
       await runStream(res, (data) => {
-        const d = data as { sessionId: string; results: { imageId: string; url: string }[]; total: number };
+        const d = data as { sessionId: string; results: { imageId: string; filename: string; url: string }[]; total: number };
         setRemaining(nextRemaining);
         setCapturedCount((prev) => prev + d.results.length);
-        onConversionComplete(d.sessionId, d.results.map((r) => ({ imageId: r.imageId, label: r.url })));
+        onConversionComplete(d.sessionId, d.results.map((r) => ({ imageId: r.imageId, filename: r.filename, label: r.url })));
       });
     } catch (err) {
       addLine({ message: err instanceof Error ? err.message : 'Conversion failed', status: 'error' });
@@ -135,7 +142,7 @@ export default function UrlInput({ sessionId, viewport, fullPage, format, onConv
       </div>
 
       <div className="converter-input__actions">
-        <button type="submit" className="btn btn--primary" disabled={loading || !url.trim()}>
+        <button type="submit" className="btn btn--primary" disabled={loading || !url.trim() || !apiKey.trim()}>
           {loading ? <><span className="spinner" /> Crawling &amp; converting…</> : 'Convert URL'}
         </button>
         {remaining.length > 0 && !loading && (

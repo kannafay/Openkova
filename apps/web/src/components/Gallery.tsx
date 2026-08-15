@@ -31,7 +31,7 @@ export default function Gallery({ sessionId, images }: Props) {
       </div>
       <div className="gallery__grid">
         {images.map((img) => {
-          const src = `/api/image/${sessionId}/${img.imageId}`;
+          const src = `/api/image/${sessionId}/${encodeURIComponent(img.imageId)}`;
           const isPdf = img.imageId.endsWith('.pdf');
           return (
             <div key={img.imageId} className="gallery__item">
@@ -54,7 +54,7 @@ export default function Gallery({ sessionId, images }: Props) {
                 <span className="gallery__item-label" title={img.label}>
                   {img.label}
                 </span>
-                <a href={src} download={img.imageId} className="gallery__download">
+                <a href={src} download={img.filename ?? img.imageId} className="gallery__download">
                   Download
                 </a>
               </div>

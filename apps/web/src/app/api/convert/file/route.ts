@@ -1,10 +1,16 @@
 import { type NextRequest } from 'next/server';
 import { screenshotSnippet } from '@openkova/core';
-import { sseResponse } from '@/lib/sse';
+import { conversionResponse, resolveResponseMode } from '@/lib/sse';
 import { parseFormat, parseViewport, resolveSessionId } from '@/lib/parse';
 import { MAX_FILES, MAX_FILE_SIZE } from '@/lib/config';
+import { requireApiKey } from '@/lib/api-auth';
+import { storage } from '@/lib/storage';
+import { createOutputFilename, publicImageUrl } from '@/lib/output-filename';
 
 export async function POST(req: NextRequest) {
+  const authError = requireApiKey(req);
+  if (authError) return authError;
+
   let formData: FormData;
   try {
     formData = await req.formData();
@@ -42,18 +48,33 @@ export async function POST(req: NextRequest) {
   const viewport = parseViewport(parsedViewport);
   const fullPage = formData.get('fullPage') === 'true';
   const format = parseFormat(formData.get('format'));
+  const responseMode = resolveResponseMode(req, formData.get('responseMode'));
+  const rawFilename = formData.get('filename');
 
-  return sseResponse(async (send) => {
+  return conversionResponse(responseMode, async (send) => {
     try {
       send({ type: 'progress', message: 'Launching virtual browser' });
 
-      const results: { imageId: string; filename: string; url: string }[] = [];
-      for (const file of files) {
+      const results: { imageId: string; filename: string; sourceFilename: string; url: string }[] = [];
+      for (let index = 0; index < files.length; index++) {
+        const file = files[index]!;
         send({ type: 'progress', message: `Rendering ${file.name}` });
         const buffer = Buffer.from(await file.arrayBuffer());
         const html = buffer.toString('utf-8');
-        const imageId = await screenshotSnippet(html, sessionId, { viewport, fullPage, format });
-        results.push({ imageId, filename: file.name, url: `/api/image/${sessionId}/${imageId}` });
+        const storageId = await screenshotSnippet(html, sessionId, { viewport, fullPage, format });
+        const filename = createOutputFilename(
+          rawFilename,
+          file.name,
+          storageId,
+          { index, total: files.length },
+        );
+        await storage.setFilename(sessionId, storageId, filename);
+        results.push({
+          imageId: filename,
+          filename,
+          sourceFilename: file.name,
+          url: publicImageUrl(sessionId, filename),
+        });
       }
 
       const total = results.length;

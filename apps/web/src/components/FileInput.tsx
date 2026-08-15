@@ -6,6 +6,7 @@ import Terminal from './Terminal';
 import { useSSEStream } from '@/hooks/useSSEStream';
 
 interface Props {
+  apiKey: string;
   sessionId: string | null;
   viewport: Viewport;
   fullPage: boolean;
@@ -13,7 +14,7 @@ interface Props {
   onConversionComplete: (sessionId: string, images: GalleryImage[]) => void;
 }
 
-export default function FileInput({ sessionId, viewport, fullPage, format, onConversionComplete }: Props) {
+export default function FileInput({ apiKey, sessionId, viewport, fullPage, format, onConversionComplete }: Props) {
   const [files, setFiles] = useState<File[]>([]);
   const { lines, loading, setLoading, addLine, reset, runStream } = useSSEStream();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -42,7 +43,11 @@ export default function FileInput({ sessionId, viewport, fullPage, format, onCon
       formData.append('fullPage', String(fullPage));
       formData.append('format', format);
 
-      const res = await fetch('/api/convert/file', { method: 'POST', body: formData });
+      const res = await fetch('/api/convert/file', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey.trim()}` },
+        body: formData,
+      });
       if (!res.ok) {
         let message = `Server error ${res.status}`;
         try { const d = (await res.json()) as { error?: string }; if (d.error) message = d.error; } catch {}
@@ -51,7 +56,7 @@ export default function FileInput({ sessionId, viewport, fullPage, format, onCon
       }
       await runStream(res, (data) => {
         const d = data as { sessionId: string; results: { imageId: string; filename: string }[] };
-        onConversionComplete(d.sessionId, d.results.map((r) => ({ imageId: r.imageId, label: r.filename })));
+        onConversionComplete(d.sessionId, d.results.map((r) => ({ imageId: r.imageId, filename: r.filename, label: r.filename })));
         setFiles([]);
         if (inputRef.current) inputRef.current.value = '';
       });
@@ -90,7 +95,7 @@ export default function FileInput({ sessionId, viewport, fullPage, format, onCon
       </div>
 
       <div className="converter-input__actions">
-        <button type="submit" className="btn btn--primary" disabled={loading || files.length === 0}>
+        <button type="submit" className="btn btn--primary" disabled={loading || files.length === 0 || !apiKey.trim()}>
           {loading ? (
             <><span className="spinner" /> Converting…</>
           ) : (

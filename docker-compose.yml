@@ -5,6 +5,8 @@ services:
       - "3000:3000"
     environment:
       OPENKOVA_STORAGE_PATH: /data
+      API_KEY: ${API_KEY:?API_KEY不能为空}
+      CLEANUP_RETENTION_HOURS: ${CLEANUP_RETENTION_HOURS:-24}
       OPENKOVA_GITHUB_URL: https://github.com/scnix-git/openkova
     volumes:
       - openkova_data:/data

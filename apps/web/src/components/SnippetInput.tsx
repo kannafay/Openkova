@@ -7,6 +7,7 @@ import { useSSEStream } from '@/hooks/useSSEStream';
 import { useState } from 'react';
 
 interface Props {
+  apiKey: string;
   sessionId: string | null;
   viewport: Viewport;
   fullPage: boolean;
@@ -17,7 +18,7 @@ interface Props {
 const PLACEHOLDER = `<h1 style="font-family: sans-serif; color: #7c6af7;">Hello, Openkova!</h1>
 <p style="font-family: sans-serif; color: #666;">Paste any HTML here to convert it to an image.</p>`;
 
-export default function SnippetInput({ sessionId, viewport, fullPage, format, onConversionComplete }: Props) {
+export default function SnippetInput({ apiKey, sessionId, viewport, fullPage, format, onConversionComplete }: Props) {
   const [html, setHtml] = useState('');
   const { lines, loading, setLoading, addLine, reset, runStream } = useSSEStream();
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -37,7 +38,10 @@ export default function SnippetInput({ sessionId, viewport, fullPage, format, on
     try {
       const res = await fetch('/api/convert/snippet', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey.trim()}`,
+        },
         body: JSON.stringify({ html: trimmed, sessionId, viewport, fullPage, format }),
       });
       if (!res.ok) {
@@ -47,8 +51,8 @@ export default function SnippetInput({ sessionId, viewport, fullPage, format, on
         return;
       }
       await runStream(res, (data) => {
-        const d = data as { sessionId: string; imageId: string };
-        onConversionComplete(d.sessionId, [{ imageId: d.imageId, label: 'snippet' }]);
+        const d = data as { sessionId: string; imageId: string; filename: string };
+        onConversionComplete(d.sessionId, [{ imageId: d.imageId, filename: d.filename, label: d.filename }]);
       });
     } catch (err) {
       addLine({ message: err instanceof Error ? err.message : 'Conversion failed', status: 'error' });
@@ -78,7 +82,7 @@ export default function SnippetInput({ sessionId, viewport, fullPage, format, on
       </div>
 
       <div className="converter-input__actions">
-        <button type="submit" className="btn btn--primary" disabled={loading || !html.trim()}>
+        <button type="submit" className="btn btn--primary" disabled={loading || !html.trim() || !apiKey.trim()}>
           {loading ? <><span className="spinner" /> Converting…</> : 'Convert to Image'}
         </button>
       </div>

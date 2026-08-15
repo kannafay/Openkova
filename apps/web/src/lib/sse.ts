@@ -6,6 +6,17 @@ export type SSEEvent =
 // Cookie TTL: 7 days (independent of the 24-hour storage cleanup)
 const SESSION_COOKIE_TTL_SECS = 60 * 60 * 24 * 7;
 
+export type ResponseMode = 'sse' | 'json';
+
+function sessionCookie(sessionId: string): string {
+  return `openkova_session=${sessionId}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_COOKIE_TTL_SECS}`;
+}
+
+export function resolveResponseMode(request: Request, rawMode?: unknown): ResponseMode {
+  const queryMode = new URL(request.url).searchParams.get('responseMode');
+  return queryMode === 'json' || rawMode === 'json' ? 'json' : 'sse';
+}
+
 export function sseResponse(
   fn: (send: (event: SSEEvent) => void) => Promise<void>,
   sessionId: string,
@@ -36,9 +47,39 @@ export function sseResponse(
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
-      'Set-Cookie': `openkova_session=${sessionId}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_COOKIE_TTL_SECS}`,
+      'Set-Cookie': sessionCookie(sessionId),
     },
   });
+}
+
+async function jsonResponse(
+  fn: (send: (event: SSEEvent) => void) => Promise<void>,
+  sessionId: string,
+): Promise<Response> {
+  let finalEvent: SSEEvent | null = null;
+  const send = (event: SSEEvent) => {
+    if (event.type === 'done' || event.type === 'error') finalEvent = event;
+  };
+
+  try {
+    await fn(send);
+  } catch {
+    finalEvent = { type: 'error', message: 'Internal server error' };
+  }
+
+  const event: SSEEvent = finalEvent ?? { type: 'error', message: 'Conversion produced no result' };
+  return Response.json(event, {
+    status: event.type === 'error' ? 500 : 200,
+    headers: { 'Set-Cookie': sessionCookie(sessionId) },
+  });
+}
+
+export function conversionResponse(
+  mode: ResponseMode,
+  fn: (send: (event: SSEEvent) => void) => Promise<void>,
+  sessionId: string,
+): Response | Promise<Response> {
+  return mode === 'json' ? jsonResponse(fn, sessionId) : sseResponse(fn, sessionId);
 }
 
 export async function* parseSSEStream(body: ReadableStream<Uint8Array>): AsyncGenerator<SSEEvent> {

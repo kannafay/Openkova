@@ -81,6 +81,12 @@ export default function HowItWorksPage() {
           <code>StorageAdapter</code> interface makes it straightforward to swap in S3-compatible
           or any other storage backend.
         </p>
+        <p>
+          Automatic cleanup checks once at server startup and then hourly. It deletes an entire
+          session when the session directory&apos;s last-modified time is older than{' '}
+          <code>CLEANUP_RETENTION_HOURS</code> (24 hours by default). Set the value to{' '}
+          <code>0</code> to disable cleanup.
+        </p>
 
         <h2>5. Response</h2>
         <p>

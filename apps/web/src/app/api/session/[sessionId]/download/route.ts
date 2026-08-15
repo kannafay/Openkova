@@ -2,6 +2,16 @@ import { type NextRequest, NextResponse } from 'next/server';
 import { zipSync } from 'fflate';
 import { storage } from '@/lib/storage';
 
+function uniqueArchiveName(files: Record<string, Uint8Array>, requested: string): string {
+  if (!(requested in files)) return requested;
+  const dot = requested.lastIndexOf('.');
+  const base = dot > 0 ? requested.slice(0, dot) : requested;
+  const extension = dot > 0 ? requested.slice(dot) : '';
+  let index = 2;
+  while (`${base}-${index}${extension}` in files) index++;
+  return `${base}-${index}${extension}`;
+}
+
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> },
@@ -19,13 +29,14 @@ export async function GET(
     return NextResponse.json({ error: 'No images found for this session' }, { status: 404 });
   }
 
-  const files: Record<string, Uint8Array> = {};
+  const files = Object.create(null) as Record<string, Uint8Array>;
   const errors: string[] = [];
   for (const imageId of imageIds) {
     try {
       const data = await storage.get(sessionId, imageId);
       if (data) {
-        files[imageId] = new Uint8Array(data);
+        const filename = await storage.getFilename(sessionId, imageId);
+        files[uniqueArchiveName(files, filename ?? imageId)] = new Uint8Array(data);
       }
     } catch {
       errors.push(imageId);

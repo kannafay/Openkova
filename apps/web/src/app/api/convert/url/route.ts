@@ -1,8 +1,11 @@
 import { type NextRequest } from 'next/server';
 import { screenshotUrl, crawlUrl, isSafeHost } from '@openkova/core';
-import { sseResponse } from '@/lib/sse';
+import { conversionResponse, resolveResponseMode } from '@/lib/sse';
 import { parseFormat, parseViewport, resolveSessionId } from '@/lib/parse';
 import { PAGE_SIZE } from '@/lib/config';
+import { requireApiKey } from '@/lib/api-auth';
+import { storage } from '@/lib/storage';
+import { createOutputFilename, filenameFromUrl, publicImageUrl } from '@/lib/output-filename';
 
 const MAX_DIRECT_URLS = PAGE_SIZE;
 
@@ -15,6 +18,9 @@ function isSafeUrl(url: string): boolean {
 }
 
 export async function POST(req: NextRequest) {
+  const authError = requireApiKey(req);
+  if (authError) return authError;
+
   let body: unknown;
   try {
     body = await req.json();
@@ -26,6 +32,8 @@ export async function POST(req: NextRequest) {
   const viewport = parseViewport(raw.viewport);
   const fullPage = raw.fullPage === true;
   const format = parseFormat(raw.format);
+  const responseMode = resolveResponseMode(req, raw.responseMode);
+  const rawFilename = raw.filename;
 
   // ── Direct mode: screenshot a pre-known list of URLs (pagination) ──────────
   if (Array.isArray(raw.urls)) {
@@ -58,17 +66,29 @@ export async function POST(req: NextRequest) {
     const offset = typeof raw.offset === 'number' && raw.offset >= 0 ? raw.offset : 0;
     const total = typeof raw.total === 'number' && raw.total > 0 ? raw.total : null;
 
-    return sseResponse(async (send) => {
+    return conversionResponse(responseMode, async (send) => {
       try {
         send({ type: 'progress', message: 'Launching virtual browser' });
-        const results: { imageId: string; url: string }[] = [];
+        const results: { imageId: string; filename: string; url: string; imageUrl: string }[] = [];
 
         for (let i = 0; i < urls.length; i++) {
           const u = urls[i]!;
           const pageNum = total !== null ? `${offset + i + 1}/${total}` : `${offset + i + 1}`;
           send({ type: 'progress', message: `Capturing page ${pageNum}: ${u}` });
-          const imageId = await screenshotUrl(u, sessionId, { viewport, fullPage, format });
-          results.push({ imageId, url: u });
+          const storageId = await screenshotUrl(u, sessionId, { viewport, fullPage, format });
+          const filename = createOutputFilename(
+            rawFilename,
+            filenameFromUrl(u),
+            storageId,
+            { index: offset + i, total: total ?? urls.length },
+          );
+          await storage.setFilename(sessionId, storageId, filename);
+          results.push({
+            imageId: filename,
+            filename,
+            url: u,
+            imageUrl: publicImageUrl(sessionId, filename),
+          });
         }
 
         const captured = offset + results.length;
@@ -116,7 +136,7 @@ export async function POST(req: NextRequest) {
   const crawlDepth = typeof depth === 'number' && depth >= 1 && depth <= 2 ? Math.floor(depth) : 1;
   const sessionId = resolveSessionId(providedSessionId);
 
-  return sseResponse(async (send) => {
+  return conversionResponse(responseMode, async (send) => {
     try {
       const allUrls = await crawlUrl(url, crawlDepth, (msg) =>
         send({ type: 'progress', message: msg }),
@@ -127,13 +147,25 @@ export async function POST(req: NextRequest) {
       const remaining = allUrls.slice(PAGE_SIZE);
 
       send({ type: 'progress', message: 'Launching virtual browser' });
-      const results: { imageId: string; url: string }[] = [];
+      const results: { imageId: string; filename: string; url: string; imageUrl: string }[] = [];
 
       for (let i = 0; i < batch.length; i++) {
         const u = batch[i]!;
         send({ type: 'progress', message: `Capturing page ${i + 1}/${total}: ${u}` });
-        const imageId = await screenshotUrl(u, sessionId, { viewport, fullPage, format });
-        results.push({ imageId, url: u });
+        const storageId = await screenshotUrl(u, sessionId, { viewport, fullPage, format });
+        const filename = createOutputFilename(
+          rawFilename,
+          filenameFromUrl(u),
+          storageId,
+          { index: i, total },
+        );
+        await storage.setFilename(sessionId, storageId, filename);
+        results.push({
+          imageId: filename,
+          filename,
+          url: u,
+          imageUrl: publicImageUrl(sessionId, filename),
+        });
       }
 
       const captured = results.length;

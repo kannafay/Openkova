@@ -38,18 +38,44 @@ export default function DocsPage() {
           omit it, a new session is created automatically.
         </p>
         <p>
-          <strong>Storage retention: 24 hours.</strong> Screenshots are automatically deleted 24
-          hours after the session was last written to. The server runs a cleanup pass every hour.
-          Download your images before then — use the <strong>Download All</strong> button or the{' '}
+          <strong>Storage retention: 24 hours by default.</strong> Set the optional{' '}
+          <code>CLEANUP_RETENTION_HOURS</code> environment variable to change the retention period,
+          or set it to <code>0</code> to disable automatic cleanup. The server checks once at
+          startup and then every hour. Each check compares the session directory&apos;s last-modified
+          time with the configured retention period and removes the entire expired session,
+          including all of its images. With the default setting, deletion normally occurs between
+          24 and 25 hours after the last directory modification rather than at an exact 24-hour
+          deadline. Restarting the server triggers an immediate check. Download your images before
+          then — use the <strong>Download All</strong> button or the{' '}
           <code>GET /api/session/:sessionId/download</code> endpoint to grab everything as a ZIP.
         </p>
+
+        <h2>API authentication</h2>
+        <p>
+          Every <code>POST /api/convert/*</code> request requires the key configured in{' '}
+          <code>API_KEY</code>. Send it as a bearer token (recommended) or through the{' '}
+          <code>X-API-Key</code> header. The web interface stores the entered key only in the
+          current browser session.
+        </p>
+        <pre>
+          <code>{`Authorization: Bearer your-api-key
+
+// Alternative
+X-API-Key: your-api-key`}</code>
+        </pre>
 
         <h2>Streaming responses (SSE)</h2>
         <p>
           All three convert endpoints respond with a{' '}
-          <strong>Server-Sent Events (SSE) stream</strong> rather than a single JSON blob. This
-          lets the UI (and your own code) display live progress as the browser launches, pages load,
-          and snapshots are taken.
+          <strong>Server-Sent Events (SSE) stream</strong> by default. This lets the UI (and your
+          own code) display live progress as the browser launches, pages load, and snapshots are
+          taken.
+        </p>
+        <p>
+          To wait for completion and receive one regular JSON response, add{' '}
+          <code>?responseMode=json</code> to the endpoint URL. You can also send{' '}
+          <code>responseMode=json</code> in the JSON body or multipart form data. The JSON response
+          uses the same final event shape: <code>{'{ type, message, data }'}</code>.
         </p>
         <p>Each line in the stream is a JSON event in one of three shapes:</p>
         <pre>
@@ -75,7 +101,10 @@ export default function DocsPage() {
         <pre>
           <code>{`const res = await fetch('/api/convert/snippet', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer your-api-key',
+  },
   body: JSON.stringify({ html: '<h1>Hello</h1>' }),
 });
 
@@ -104,6 +133,21 @@ while (true) {
 }`}</code>
         </pre>
 
+        <h2>Receiving one JSON response</h2>
+        <pre>
+          <code>{`const res = await fetch('/api/convert/snippet?responseMode=json', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer your-api-key',
+  },
+  body: JSON.stringify({ html: '<h1>Hello</h1>' }),
+});
+
+const result = await res.json();
+console.log(result.data);`}</code>
+        </pre>
+
         <h2>POST /api/convert/snippet</h2>
         <p>
           Renders a raw HTML string and returns a single screenshot. The HTML is wrapped in a
@@ -115,6 +159,7 @@ while (true) {
         <pre>
           <code>{`{
   "html":      "<h1>Hello</h1>",   // required — raw HTML string
+  "filename":  "order-1599",       // optional — extension is added automatically
   "sessionId": "uuid"              // optional — omit to create a new session
 }`}</code>
         </pre>
@@ -128,8 +173,9 @@ while (true) {
         <pre>
           <code>{`{
   "sessionId": "uuid",
-  "imageId":   "uuid",
-  "url":       "/api/image/{sessionId}/{imageId}"
+  "imageId":   "order-1599.png",
+  "filename":  "order-1599.png",
+  "url":       "/api/image/{sessionId}/order-1599.png"
 }`}</code>
         </pre>
 
@@ -142,8 +188,9 @@ while (true) {
           <strong>Request</strong> — <code>Content-Type: multipart/form-data</code>
         </p>
         <pre>
-          <code>{`files     File[]   // required — one or more .html/.htm files
-sessionId string   // optional form field`}</code>
+          <code>{`files      File[]   // required — one or more .html/.htm files
+filename   string   // optional — multiple results receive -1, -2, ... suffixes
+sessionId  string   // optional form field`}</code>
         </pre>
         <p>
           <strong>SSE progress messages:</strong> Launching virtual browser → Rendering{' '}
@@ -156,7 +203,7 @@ sessionId string   // optional form field`}</code>
           <code>{`{
   "sessionId": "uuid",
   "results": [
-    { "imageId": "uuid", "filename": "index.html", "url": "/api/image/..." },
+    { "imageId": "index.png", "filename": "index.png", "sourceFilename": "index.html", "url": "/api/image/{sessionId}/index.png" },
     ...
   ]
 }`}</code>
@@ -177,6 +224,7 @@ sessionId string   // optional form field`}</code>
           <code>{`{
   "url":       "https://example.com",  // required — valid absolute URL
   "depth":     1,                      // optional — 1 (default) or 2
+  "filename":  "homepage",             // optional — multiple pages receive numeric suffixes
   "sessionId": "uuid"                  // optional
 }`}</code>
         </pre>
@@ -202,7 +250,7 @@ sessionId string   // optional form field`}</code>
         <pre>
           <code>{`{
   "sessionId": "uuid",
-  "results":   [{ "imageId": "uuid", "url": "https://example.com/" }, ...],
+  "results":   [{ "imageId": "homepage-1.png", "filename": "homepage-1.png", "url": "https://example.com/", "imageUrl": "/api/image/{sessionId}/homepage-1.png" }, ...],
   "remaining": ["https://example.com/page-11", ...],  // empty array when all captured
   "total":     25
 }`}</code>
@@ -212,7 +260,9 @@ sessionId string   // optional form field`}</code>
         <p>
           Returns the screenshot file with the appropriate{' '}
           <code>Content-Type</code> header (<code>image/png</code>, <code>image/jpeg</code>,{' '}
-          <code>image/webp</code>, or <code>application/pdf</code>). Use directly as an{' '}
+          <code>image/webp</code>, or <code>application/pdf</code>). The response also includes a{' '}
+          <code>Content-Disposition</code> filename when the conversion has a stored output name.
+          Use directly as an{' '}
           <code>&lt;img src&gt;</code> or download link. Responses are cached for 1 hour (
           <code>Cache-Control: public, max-age=3600, immutable</code>).
         </p>
@@ -233,9 +283,9 @@ sessionId string   // optional form field`}</code>
         </p>
 
         <h2>GET /api/session/:sessionId</h2>
-        <p>Returns all image IDs associated with a session.</p>
+        <p>Returns all public image IDs (the final filenames) associated with a session.</p>
         <pre>
-          <code>{`{ "images": ["uuid1", "uuid2", ...] }`}</code>
+          <code>{`{ "images": ["order-1599.png", "homepage.png", ...] }`}</code>
         </pre>
         <p>Returns an empty array if the session has no images or does not exist.</p>
 
